@@ -368,7 +368,7 @@ Reject unrelated images.
 
 
         response = gemini_client.models.generate_content(
-            model="gemini-3.6-flash",
+            model="gemini-3.6-flash-lite",
             contents=[
                 prompt,
                 image_part
