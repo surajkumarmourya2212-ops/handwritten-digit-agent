@@ -1,842 +1,796 @@
 import streamlit as st
-import numpy as np
-import cv2
-from PIL import Image
 from google import genai
 from google.genai import types
+from PIL import Image
+import io
+import json
+import re
 
 
 # ============================================================
-# PAGE CONFIGURATION
+# PAGE CONFIG
 # ============================================================
 
 st.set_page_config(
-    page_title="Handwritten Digit & Text AI",
-    page_icon="🤖",
-    layout="centered"
+    page_title="OCR Handwritten",
+    page_icon="✍️",
+    layout="wide",
+    initial_sidebar_state="collapsed"
 )
 
 
 # ============================================================
-# TITLE
+# PROFESSIONAL UI STYLE
 # ============================================================
 
-st.title("🤖 Handwritten Digit & Text AI")
-st.write(
-    "Upload an image containing handwritten digits, text, or both."
-)
+st.markdown("""
+<style>
+
+.stApp {
+    background:
+        radial-gradient(
+            circle at 10% 0%,
+            rgba(76, 29, 149, 0.22),
+            transparent 32%
+        ),
+        radial-gradient(
+            circle at 90% 0%,
+            rgba(30, 64, 175, 0.20),
+            transparent 30%
+        ),
+        #070b16;
+    color: #f8fafc;
+}
+
+#MainMenu {
+    visibility: hidden;
+}
+
+header {
+    visibility: hidden;
+}
+
+footer {
+    visibility: hidden;
+}
+
+.block-container {
+    max-width: 1200px;
+    padding-top: 2rem;
+    padding-bottom: 3rem;
+}
+
+
+/* ================= HEADER ================= */
+
+.header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 20px 0 30px 0;
+    border-bottom: 1px solid rgba(148,163,184,0.12);
+    margin-bottom: 30px;
+}
+
+.logo {
+    font-size: 38px;
+    font-weight: 800;
+    letter-spacing: -1.5px;
+    color: white;
+}
+
+.logo-icon {
+    color: #a855f7;
+}
+
+.tagline {
+    color: #94a3b8;
+    font-size: 16px;
+    margin-top: 5px;
+}
+
+.ai-badge {
+    border: 1px solid rgba(168,85,247,0.35);
+    background: rgba(88,28,135,0.15);
+    padding: 12px 20px;
+    border-radius: 12px;
+    color: #ddd6fe;
+    font-weight: 600;
+}
+
+
+/* ================= CARDS ================= */
+
+.card {
+    background: rgba(15,23,42,0.75);
+    border: 1px solid rgba(148,163,184,0.14);
+    border-radius: 18px;
+    padding: 24px;
+    margin-bottom: 20px;
+    box-shadow: 0 15px 45px rgba(0,0,0,0.18);
+}
+
+.card-title {
+    font-size: 20px;
+    font-weight: 700;
+    color: #f8fafc;
+    margin-bottom: 8px;
+}
+
+.card-subtitle {
+    color: #94a3b8;
+    font-size: 14px;
+    margin-bottom: 20px;
+}
+
+
+/* ================= UPLOAD ================= */
+
+.upload-box {
+    border: 1px dashed rgba(167,139,250,0.55);
+    border-radius: 16px;
+    padding: 35px 20px;
+    text-align: center;
+    background: rgba(30,27,75,0.20);
+}
+
+.upload-icon {
+    font-size: 42px;
+}
+
+.upload-text {
+    font-size: 18px;
+    font-weight: 600;
+    margin-top: 10px;
+}
+
+.upload-help {
+    color: #94a3b8;
+    font-size: 13px;
+    margin-top: 8px;
+}
+
+
+/* ================= RESULT CARDS ================= */
+
+.result-card {
+    background: rgba(15,23,42,0.85);
+    border: 1px solid rgba(99,102,241,0.25);
+    border-radius: 16px;
+    padding: 20px;
+    min-height: 120px;
+}
+
+.result-label {
+    color: #94a3b8;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    font-weight: 700;
+}
+
+.result-value {
+    color: white;
+    font-size: 22px;
+    font-weight: 750;
+    margin-top: 12px;
+}
+
+
+/* ================= EXTRACTED TEXT ================= */
+
+.text-box {
+    background: #020617;
+    border: 1px solid #1e293b;
+    border-radius: 14px;
+    padding: 22px;
+    color: #e2e8f0;
+    font-size: 18px;
+    line-height: 1.8;
+    white-space: pre-wrap;
+}
+
+
+/* ================= SUCCESS ================= */
+
+.success-box {
+    border: 1px solid rgba(34,197,94,0.30);
+    background: rgba(22,101,52,0.15);
+    color: #86efac;
+    padding: 18px;
+    border-radius: 14px;
+    margin-top: 20px;
+}
+
+
+/* ================= INVALID ================= */
+
+.invalid-box {
+    border: 1px solid rgba(239,68,68,0.30);
+    background: rgba(127,29,29,0.15);
+    color: #fca5a5;
+    padding: 20px;
+    border-radius: 14px;
+}
+
+
+/* ================= FOOTER ================= */
+
+.footer {
+    text-align: center;
+    color: #64748b;
+    margin-top: 50px;
+    padding-top: 25px;
+    border-top: 1px solid rgba(148,163,184,0.10);
+    font-size: 13px;
+}
+
+</style>
+""", unsafe_allow_html=True)
 
 
 # ============================================================
-# GEMINI CLIENT
+# GEMINI API
 # ============================================================
 
-@st.cache_resource
-def get_gemini_client():
+try:
+    API_KEY = st.secrets["GEMINI_API_KEY"]
+except Exception:
+    API_KEY = None
 
-    if "GEMINI_API_KEY" not in st.secrets:
-        return None
-
-    api_key = st.secrets["GEMINI_API_KEY"]
-
-    return genai.Client(api_key=api_key)
-
-
-gemini_client = get_gemini_client()
-
-
-# ============================================================
-# OPTIONAL DIGIT MODEL
-# ============================================================
-
-@st.cache_resource
-def load_digit_model():
-
-    try:
-
-        import tensorflow as tf
-
-        model = tf.keras.models.load_model(
-            "digit_model.keras"
-        )
-
-        return model
-
-    except Exception:
-
-        return None
+if not API_KEY:
+    st.error("🔐 Gemini API key is missing.")
+    st.info(
+        "Open Streamlit Settings → Secrets and add "
+        "GEMINI_API_KEY."
+    )
+    st.stop()
 
 
-digit_model = load_digit_model()
+client = genai.Client(api_key=API_KEY)
+
+# Current stable multimodal Gemini model
+MODEL = "gemini-3.7-flash"
 
 
 # ============================================================
-# IMAGE QUALITY CHECK
+# HEADER
 # ============================================================
 
-def basic_image_quality_check(image):
+st.markdown("""
+<div class="header">
 
-    image_array = np.array(image)
+    <div>
+        <div class="logo">
+            <span class="logo-icon">✍️</span>
+            OCR Handwritten
+        </div>
 
-    if image_array.size == 0:
-        return False, "The image is empty."
+        <div class="tagline">
+            AI-Powered Handwritten Text & Digit Recognition
+        </div>
+    </div>
 
-    gray = cv2.cvtColor(
-        image_array,
-        cv2.COLOR_RGB2GRAY
+    <div class="ai-badge">
+        ✨ Powered by Gemini AI
+    </div>
+
+</div>
+""", unsafe_allow_html=True)
+
+
+# ============================================================
+# MAIN LAYOUT
+# ============================================================
+
+left, right = st.columns([0.85, 1.5], gap="large")
+
+
+# ============================================================
+# LEFT SIDE
+# ============================================================
+
+with left:
+
+    st.markdown("""
+    <div class="card">
+
+        <div class="card-title">
+            📤 Upload Handwritten Image
+        </div>
+
+        <div class="card-subtitle">
+            Upload an image containing handwritten
+            text, digits, or both.
+        </div>
+
+    </div>
+    """, unsafe_allow_html=True)
+
+
+    uploaded_file = st.file_uploader(
+        "Upload image",
+        type=["png", "jpg", "jpeg", "webp"],
+        label_visibility="collapsed"
     )
 
-    # Very dark or very bright / blank image
-    mean_value = np.mean(gray)
-    standard_deviation = np.std(gray)
 
-    if standard_deviation < 5:
+    st.markdown("""
+    <div class="card">
 
-        return False, "The image appears blank or has very little information."
+        <div class="card-title">
+            💡 Tips
+        </div>
 
-    if mean_value < 3:
+        <div style="color:#94a3b8; line-height:2;">
 
-        return False, "The image is almost completely black."
+        • Use a clear handwritten image<br>
+        • Good lighting gives better results<br>
+        • Supports handwritten text<br>
+        • Supports handwritten digits<br>
+        • Supports text + digits together<br>
+        • Random/non-handwritten images are rejected
 
-    if mean_value > 252:
+        </div>
 
-        return False, "The image is almost completely white."
-
-    return True, "Image quality looks acceptable."
+    </div>
+    """, unsafe_allow_html=True)
 
 
 # ============================================================
-# PREPROCESS FOR OLD DIGIT MODEL
+# RIGHT SIDE
 # ============================================================
 
-def preprocess_digit_image(image):
+with right:
 
-    image_array = np.array(image)
+    if uploaded_file:
 
-    gray = cv2.cvtColor(
-        image_array,
-        cv2.COLOR_RGB2GRAY
-    )
+        image = Image.open(uploaded_file)
 
-    # Remove small noise
-    gray = cv2.GaussianBlur(
-        gray,
-        (5, 5),
-        0
-    )
+        st.markdown("""
+        <div class="card">
 
-    # Convert black handwriting on white paper
-    # into white handwriting on black background
-    _, binary = cv2.threshold(
-        gray,
-        0,
-        255,
-        cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU
-    )
+            <div class="card-title">
+                🖼️ Uploaded Image
+            </div>
 
-    contours, _ = cv2.findContours(
-        binary,
-        cv2.RETR_EXTERNAL,
-        cv2.CHAIN_APPROX_SIMPLE
-    )
+        </div>
+        """, unsafe_allow_html=True)
 
-    if contours:
-
-        # Ignore extremely tiny objects
-        contours = [
-            c for c in contours
-            if cv2.contourArea(c) > 20
-        ]
-
-    if contours:
-
-        largest_contour = max(
-            contours,
-            key=cv2.contourArea
+        st.image(
+            image,
+            use_container_width=True
         )
 
-        x, y, w, h = cv2.boundingRect(
-            largest_contour
+        analyze_button = st.button(
+            "🔍  Analyze Image",
+            type="primary",
+            use_container_width=True
         )
-
-        padding = int(
-            max(w, h) * 0.25
-        )
-
-        x1 = max(
-            0,
-            x - padding
-        )
-
-        y1 = max(
-            0,
-            y - padding
-        )
-
-        x2 = min(
-            binary.shape[1],
-            x + w + padding
-        )
-
-        y2 = min(
-            binary.shape[0],
-            y + h + padding
-        )
-
-        cropped = binary[
-            y1:y2,
-            x1:x2
-        ]
 
     else:
 
-        cropped = binary
+        st.markdown("""
+        <div class="card" style="text-align:center; padding:80px 30px;">
 
+            <div style="font-size:55px;">
+                ✍️
+            </div>
 
-    # --------------------------------------------------------
-    # MAKE IMAGE SQUARE
-    # --------------------------------------------------------
+            <div style="
+                font-size:24px;
+                font-weight:700;
+                margin-top:15px;
+            ">
+                Ready to recognize handwriting
+            </div>
 
-    h, w = cropped.shape
+            <div style="
+                color:#94a3b8;
+                margin-top:10px;
+            ">
+                Upload an image to begin OCR analysis.
+            </div>
 
-    size = max(
-        h,
-        w
-    )
+        </div>
+        """, unsafe_allow_html=True)
 
-    square = np.zeros(
-        (size, size),
-        dtype=np.uint8
-    )
-
-    y_offset = (size - h) // 2
-    x_offset = (size - w) // 2
-
-    square[
-        y_offset:y_offset + h,
-        x_offset:x_offset + w
-    ] = cropped
-
-
-    # --------------------------------------------------------
-    # RESIZE TO MNIST SIZE
-    # --------------------------------------------------------
-
-    resized = cv2.resize(
-        square,
-        (28, 28),
-        interpolation=cv2.INTER_AREA
-    )
-
-
-    # --------------------------------------------------------
-    # NORMALIZE
-    # --------------------------------------------------------
-
-    normalized = (
-        resized.astype("float32") / 255.0
-    )
-
-    return normalized.reshape(
-        1,
-        28,
-        28
-    )
+        analyze_button = False
 
 
 # ============================================================
-# DIGIT MODEL PREDICTION
+# AI ANALYSIS
 # ============================================================
 
-def predict_with_digit_model(image):
+if uploaded_file and analyze_button:
 
-    if digit_model is None:
+    with st.spinner(
+        "🧠 Gemini AI is analyzing your handwriting..."
+    ):
 
-        return None, None
+        try:
 
-    try:
+            # Convert image to PNG bytes
+            image_bytes = io.BytesIO()
 
-        processed = preprocess_digit_image(
-            image
-        )
-
-        probabilities = digit_model.predict(
-            processed,
-            verbose=0
-        )[0]
-
-        digit = int(
-            np.argmax(probabilities)
-        )
-
-        confidence = float(
-            np.max(probabilities)
-        )
-
-        return digit, confidence
-
-    except Exception:
-
-        return None, None
-
-
-# ============================================================
-# GEMINI IMAGE ANALYSIS
-# ============================================================
-
-def analyze_with_gemini(image):
-
-    if gemini_client is None:
-
-        return {
-            "success": False,
-            "message": (
-                "Gemini API key was not found. "
-                "Please add GEMINI_API_KEY to Streamlit Secrets."
+            image.save(
+                image_bytes,
+                format="PNG"
             )
-        }
+
+            image_data = image_bytes.getvalue()
 
 
-    try:
+            # ==================================================
+            # OCR + VALIDATION PROMPT
+            # ==================================================
 
-        # Convert PIL image to JPEG bytes
-        image_bytes = __import__(
-            "io"
-        ).BytesIO()
+            prompt = """
+You are an advanced handwritten OCR system.
 
-        image.save(
-            image_bytes,
-            format="JPEG"
-        )
+Analyze this image carefully.
 
-        image_data = image_bytes.getvalue()
+Your task is to recognize ONLY meaningful handwritten
+content visible in the image.
 
+The image can contain:
 
-        # Create Gemini image part
-        image_part = types.Part.from_bytes(
-            data=image_data,
-            mime_type="image/jpeg"
-        )
+1. Handwritten digits
+2. Handwritten text
+3. Handwritten digits and text together
+4. No valid handwritten content
 
+IMPORTANT RULES:
 
-        prompt = """
-You are the image validation and handwriting recognition agent
-for a Handwritten Digit and Text Recognition application.
+- Do NOT guess missing characters.
+- Do NOT hallucinate text.
+- Do NOT convert random objects into text.
+- Do NOT treat printed UI text as handwritten content.
+- If the image is a random object, landscape, animal,
+  room, laptop, screenshot, blank image, etc.,
+  mark it INVALID.
+- If there is handwritten text and digits together,
+  extract BOTH.
+- Preserve the reading order.
+- Return the handwriting as accurately as possible.
 
-Analyze the uploaded image carefully.
+Return ONLY JSON.
 
-Your job is to determine:
+Use exactly this structure:
 
-1. Is this image valid for handwriting recognition?
-2. Does it contain handwritten content?
-3. Does it contain:
-   - digits
-   - handwritten text
-   - both digits and text
-   - no handwriting
-4. If handwriting exists, transcribe ONLY the visible handwritten
-   content as accurately as possible.
-5. Do NOT invent text that is not visible.
-6. If the image is a random photo, screenshot, object, landscape,
-   computer screen, blank paper, printed document, or unrelated image,
-   mark it as INVALID unless clear handwritten content is visible.
-7. If the handwriting is unclear, say that it is unclear rather than
-   guessing.
-8. If there are multiple lines, preserve the approximate line order.
+{
+  "valid": true,
+  "content_type": "digits_and_text",
+  "extracted_text": "My Roll No is 12345",
+  "digits_found": ["1","2","3","4","5"],
+  "confidence": "high",
+  "message": "Handwritten text and digits detected successfully."
+}
 
-Return your answer exactly in this format:
+content_type MUST be one of:
 
-VALID: YES or NO
+"digits"
+"text"
+"digits_and_text"
+"invalid"
 
-TYPE: DIGIT / TEXT / BOTH / NONE
+For invalid images return:
 
-TRANSCRIPTION:
-Write the detected handwritten content here.
-If there is no readable handwriting, write NONE.
-
-REASON:
-Give one short reason.
-
-CONFIDENCE:
-Give a number from 0 to 100.
-
-IMPORTANT:
-Do not force a digit prediction.
-Do not assume every image contains a digit.
-Reject unrelated images.
+{
+  "valid": false,
+  "content_type": "invalid",
+  "extracted_text": "",
+  "digits_found": [],
+  "confidence": "high",
+  "message": "No valid handwritten text or digits detected."
+}
 """
 
 
-        response = gemini_client.models.generate_content(
-            model="gemini-3.6-flash",
-            contents=[
-                prompt,
-                image_part
-            ]
-        )
+            # ==================================================
+            # SEND IMAGE TO GEMINI
+            # ==================================================
 
-
-        text = response.text
-
-        return {
-            "success": True,
-            "response": text
-        }
-
-
-    except Exception as e:
-
-        return {
-            "success": False,
-            "message": str(e)
-        }
-
-
-# ============================================================
-# PARSE GEMINI RESPONSE
-# ============================================================
-
-def parse_gemini_response(text):
-
-    result = {
-        "valid": "UNKNOWN",
-        "type": "UNKNOWN",
-        "transcription": "UNKNOWN",
-        "reason": "",
-        "confidence": None
-    }
-
-
-    lines = text.splitlines()
-
-    current_section = None
-
-    transcription_lines = []
-
-
-    for line in lines:
-
-        clean = line.strip()
-
-        upper = clean.upper()
-
-
-        if upper.startswith("VALID:"):
-
-            result["valid"] = (
-                clean.split(
-                    ":",
-                    1
-                )[1]
-                .strip()
-                .upper()
+            response = client.models.generate_content(
+                model=MODEL,
+                contents=[
+                    types.Part.from_bytes(
+                        data=image_data,
+                        mime_type="image/png"
+                    ),
+                    prompt
+                ]
             )
 
 
-        elif upper.startswith("TYPE:"):
+            raw = response.text.strip()
 
-            result["type"] = (
-                clean.split(
-                    ":",
-                    1
-                )[1]
-                .strip()
-                .upper()
+
+            # Remove markdown JSON formatting
+            raw = re.sub(
+                r"```json",
+                "",
+                raw,
+                flags=re.IGNORECASE
+            )
+
+            raw = raw.replace("```", "").strip()
+
+
+            result = json.loads(raw)
+
+
+            # ==================================================
+            # RESULT
+            # ==================================================
+
+            st.markdown("---")
+
+            st.markdown(
+                "## 🎯 Recognition Result"
             )
 
 
-        elif upper.startswith("TRANSCRIPTION:"):
+            # ==================================================
+            # INVALID IMAGE
+            # ==================================================
 
-            current_section = "transcription"
+            if not result.get("valid", False):
 
-            value = clean.split(
-                ":",
-                1
-            )[1].strip()
+                st.markdown("""
+                <div class="invalid-box">
 
-            if value:
-                transcription_lines.append(
-                    value
-                )
+                    <h3>❌ Invalid Image</h3>
 
+                    No valid handwritten text or digits
+                    were detected in this image.
 
-        elif upper.startswith("REASON:"):
+                </div>
+                """, unsafe_allow_html=True)
 
-            current_section = "reason"
 
-            result["reason"] = clean.split(
-                ":",
-                1
-            )[1].strip()
-
-
-        elif upper.startswith("CONFIDENCE:"):
-
-            current_section = "confidence"
-
-            value = clean.split(
-                ":",
-                1
-            )[1].strip()
-
-            try:
-
-                value = (
-                    value
-                    .replace("%", "")
-                    .strip()
-                )
-
-                result["confidence"] = float(
-                    value
-                )
-
-            except:
-
-                result["confidence"] = None
-
-
-        elif current_section == "transcription":
-
-            if clean:
-
-                transcription_lines.append(
-                    clean
-                )
-
-
-        elif current_section == "reason":
-
-            if clean:
-
-                result["reason"] += " " + clean
-
-
-    if transcription_lines:
-
-        result["transcription"] = "\n".join(
-            transcription_lines
-        )
-
-
-    return result
-
-
-# ============================================================
-# AGENT
-# ============================================================
-
-def handwriting_agent(image):
-
-    # --------------------------------------------------------
-    # STEP 1 — BASIC IMAGE CHECK
-    # --------------------------------------------------------
-
-    valid, quality_message = (
-        basic_image_quality_check(image)
-    )
-
-
-    if not valid:
-
-        return {
-            "status": "invalid",
-            "message": quality_message
-        }
-
-
-    # --------------------------------------------------------
-    # STEP 2 — GEMINI VALIDATION
-    # --------------------------------------------------------
-
-    gemini_result = analyze_with_gemini(
-        image
-    )
-
-
-    if not gemini_result["success"]:
-
-        return {
-            "status": "error",
-            "message": gemini_result["message"]
-        }
-
-
-    # --------------------------------------------------------
-    # STEP 3 — PARSE GEMINI
-    # --------------------------------------------------------
-
-    parsed = parse_gemini_response(
-        gemini_result["response"]
-    )
-
-
-    # --------------------------------------------------------
-    # STEP 4 — REJECT INVALID IMAGE
-    # --------------------------------------------------------
-
-    if parsed["valid"] == "NO":
-
-        return {
-            "status": "invalid",
-            "type": parsed["type"],
-            "reason": parsed["reason"],
-            "confidence": parsed["confidence"]
-        }
-
-
-    # --------------------------------------------------------
-    # STEP 5 — DIGIT MODEL CROSS-CHECK
-    # --------------------------------------------------------
-
-    digit_prediction = None
-    digit_confidence = None
-
-
-    if parsed["type"] == "DIGIT":
-
-        digit_prediction, digit_confidence = (
-            predict_with_digit_model(image)
-        )
-
-
-    # --------------------------------------------------------
-    # STEP 6 — FINAL RESULT
-    # --------------------------------------------------------
-
-    return {
-        "status": "success",
-        "type": parsed["type"],
-        "transcription": parsed["transcription"],
-        "reason": parsed["reason"],
-        "gemini_confidence": parsed["confidence"],
-        "digit_prediction": digit_prediction,
-        "digit_confidence": digit_confidence
-    }
-
-
-# ============================================================
-# FILE UPLOAD
-# ============================================================
-
-uploaded_file = st.file_uploader(
-    "📷 Upload your image",
-    type=[
-        "png",
-        "jpg",
-        "jpeg",
-        "webp"
-    ]
-)
-
-
-# ============================================================
-# MAIN APPLICATION
-# ============================================================
-
-if uploaded_file:
-
-    image = Image.open(
-        uploaded_file
-    ).convert("RGB")
-
-
-    st.subheader(
-        "📷 Uploaded Image"
-    )
-
-    st.image(
-        image,
-        use_container_width=True
-    )
-
-
-    if st.button(
-        "🤖 Analyze Image",
-        type="primary"
-    ):
-
-        with st.spinner(
-            "AI Agent is analyzing the image..."
-        ):
-
-            result = handwriting_agent(
-                image
-            )
-
-
-        # ====================================================
-        # INVALID IMAGE
-        # ====================================================
-
-        if result["status"] == "invalid":
-
-            st.error(
-                "❌ Invalid Image / No suitable handwriting detected."
-            )
-
-
-            if "reason" in result:
-
-                st.warning(
-                    f"Reason: {result['reason']}"
-                )
-
-
-            if "confidence" in result:
-
-                if result["confidence"] is not None:
-
-                    st.write(
-                        f"AI confidence: "
-                        f"{result['confidence']:.2f}%"
+                st.info(
+                    result.get(
+                        "message",
+                        "Please upload a handwritten image."
                     )
-
-
-        # ====================================================
-        # ERROR
-        # ====================================================
-
-        elif result["status"] == "error":
-
-            st.error(
-                "⚠️ AI processing error"
-            )
-
-            st.write(
-                result["message"]
-            )
-
-
-        # ====================================================
-        # SUCCESS
-        # ====================================================
-
-        else:
-
-            st.success(
-                "✅ Handwritten content detected!"
-            )
-
-
-            # ------------------------------------------------
-            # TYPE
-            # ------------------------------------------------
-
-            st.subheader(
-                "🔎 Detected Type"
-            )
-
-            st.info(
-                result["type"]
-            )
-
-
-            # ------------------------------------------------
-            # TRANSCRIPTION
-            # ------------------------------------------------
-
-            st.subheader(
-                "✍️ Recognized Content"
-            )
-
-            st.success(
-                result["transcription"]
-            )
-
-
-            # ------------------------------------------------
-            # GEMINI CONFIDENCE
-            # ------------------------------------------------
-
-            if result["gemini_confidence"] is not None:
-
-                st.metric(
-                    "AI Confidence",
-                    f"{result['gemini_confidence']:.2f}%"
                 )
 
 
-            # ------------------------------------------------
-            # DIGIT MODEL
-            # ------------------------------------------------
-
-            if result["digit_prediction"] is not None:
-
-                st.subheader(
-                    "🔢 Digit Model Cross-Check"
-                )
-
-                st.write(
-                    f"Digit Model Prediction: "
-                    f"**{result['digit_prediction']}**"
-                )
-
-                st.write(
-                    f"Digit Model Confidence: "
-                    f"**{result['digit_confidence'] * 100:.2f}%**"
-                )
-
-
-            # ------------------------------------------------
-            # AGENT DECISION
-            # ------------------------------------------------
-
-            st.subheader(
-                "🤖 Agent Decision"
-            )
-
-            if result["type"] == "DIGIT":
-
-                st.info(
-                    "The image contains a handwritten digit. "
-                    "Gemini analyzed the image and the local "
-                    "digit model was used as an additional check."
-                )
-
-            elif result["type"] == "TEXT":
-
-                st.info(
-                    "The image contains handwritten text. "
-                    "Gemini was used to analyze and transcribe it."
-                )
-
-            elif result["type"] == "BOTH":
-
-                st.info(
-                    "The image contains both handwritten "
-                    "digits and text. Gemini analyzed the mixed content."
-                )
+            # ==================================================
+            # VALID IMAGE
+            # ==================================================
 
             else:
 
-                st.info(
-                    "The image was analyzed as handwritten content."
+                content_type = result.get(
+                    "content_type",
+                    "unknown"
+                )
+
+                extracted_text = result.get(
+                    "extracted_text",
+                    ""
+                )
+
+                digits = result.get(
+                    "digits_found",
+                    []
+                )
+
+                confidence = result.get(
+                    "confidence",
+                    "unknown"
+                )
+
+                message = result.get(
+                    "message",
+                    "Content recognized successfully."
                 )
 
 
-            # ------------------------------------------------
-            # REASON
-            # ------------------------------------------------
+                # ==================================================
+                # SUMMARY CARDS
+                # ==================================================
 
-            if result["reason"]:
+                r1, r2, r3 = st.columns(3)
 
-                st.subheader(
-                    "🧠 AI Explanation"
+
+                with r1:
+
+                    st.markdown(
+                        f"""
+                        <div class="result-card">
+
+                            <div class="result-label">
+                                Content Type
+                            </div>
+
+                            <div class="result-value">
+                                {content_type.replace("_", " ").title()}
+                            </div>
+
+                        </div>
+                        """,
+                        unsafe_allow_html=True
+                    )
+
+
+                with r2:
+
+                    st.markdown(
+                        f"""
+                        <div class="result-card">
+
+                            <div class="result-label">
+                                AI Confidence
+                            </div>
+
+                            <div class="result-value">
+                                {confidence.title()}
+                            </div>
+
+                        </div>
+                        """,
+                        unsafe_allow_html=True
+                    )
+
+
+                with r3:
+
+                    st.markdown(
+                        f"""
+                        <div class="result-card">
+
+                            <div class="result-label">
+                                Digits Detected
+                            </div>
+
+                            <div class="result-value">
+                                {len(digits)}
+                            </div>
+
+                        </div>
+                        """,
+                        unsafe_allow_html=True
+                    )
+
+
+                # ==================================================
+                # EXTRACTED CONTENT
+                # ==================================================
+
+                st.markdown("### 📝 Extracted Content")
+
+                st.markdown(
+                    f"""
+                    <div class="text-box">
+{extracted_text}
+                    </div>
+                    """,
+                    unsafe_allow_html=True
                 )
 
-                st.write(
-                    result["reason"]
+
+                # ==================================================
+                # DIGITS
+                # ==================================================
+
+                if digits:
+
+                    st.markdown("### 🔢 Detected Digits")
+
+                    digit_text = " • ".join(
+                        str(d) for d in digits
+                    )
+
+                    st.success(
+                        f"Digits detected: {digit_text}"
+                    )
+
+
+                # ==================================================
+                # AI EXPLANATION
+                # ==================================================
+
+                st.markdown("### 🧠 AI Explanation")
+
+                st.info(message)
+
+
+                # ==================================================
+                # SUCCESS
+                # ==================================================
+
+                st.markdown("""
+                <div class="success-box">
+
+                    <strong>
+                        ✅ Handwritten content recognized successfully!
+                    </strong>
+
+                    <br><br>
+
+                    The AI identified and extracted
+                    the handwritten content from your image.
+
+                </div>
+                """, unsafe_allow_html=True)
+
+
+                # ==================================================
+                # DOWNLOAD RESULT
+                # ==================================================
+
+                download_text = f"""
+OCR HANDWRITTEN
+============================
+
+Content Type:
+{content_type}
+
+AI Confidence:
+{confidence}
+
+Extracted Content:
+{extracted_text}
+
+Detected Digits:
+{", ".join(str(x) for x in digits)}
+
+AI Explanation:
+{message}
+
+============================
+Powered by Gemini AI
+"""
+
+
+                st.download_button(
+                    "⬇️ Download Result",
+                    data=download_text,
+                    file_name="ocr_handwritten_result.txt",
+                    mime="text/plain"
                 )
+
+
+        except json.JSONDecodeError:
+
+            st.error(
+                "⚠️ Gemini returned an unexpected format."
+            )
+
+            with st.expander(
+                "Show technical response"
+            ):
+                st.code(raw)
+
+
+        except Exception as e:
+
+            st.error(
+                "❌ AI processing error"
+            )
+
+            with st.expander(
+                "Show technical details"
+            ):
+                st.code(str(e))
 
 
 # ============================================================
 # FOOTER
 # ============================================================
 
-st.divider()
+st.markdown("""
+<div class="footer">
 
-st.caption(
-    "🤖 Handwritten Digit & Text Recognition "
-    "powered by Streamlit + Gemini AI"
-)
+    ✍️ <strong>OCR Handwritten</strong>
+    &nbsp; • &nbsp;
+    AI-Powered Handwritten Text & Digit Recognition
+    <br><br>
+
+    Built with Streamlit + Gemini AI
+
+</div>
+""", unsafe_allow_html=True)
