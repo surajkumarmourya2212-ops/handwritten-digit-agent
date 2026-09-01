@@ -2,79 +2,193 @@ import streamlit as st
 import tensorflow as tf
 import numpy as np
 import cv2
+import json
 from PIL import Image
+from google import genai
+from google.genai import types
 
 
 # ============================================================
-# STREAMLIT PAGE CONFIG
+# STREAMLIT CONFIG
 # ============================================================
 
 st.set_page_config(
-    page_title="Handwritten Digit AI",
+    page_title="Agentic AI Handwritten Digit Recognition",
     page_icon="🤖",
     layout="centered"
 )
 
 
 # ============================================================
-# LOAD TRAINED MODEL
+# TITLE
+# ============================================================
+
+st.title("🤖 Agentic AI Handwritten Digit Recognition")
+
+st.write(
+    "Upload an image containing ONE handwritten digit (0–9)."
+)
+
+st.info(
+    "The AI Agent first checks whether the image is a valid "
+    "handwritten digit. Only then is it sent to the CNN model."
+)
+
+
+# ============================================================
+# LOAD YOUR EXISTING CNN MODEL
 # ============================================================
 
 @st.cache_resource
 def load_model():
-    return tf.keras.models.load_model("digit_model.keras")
+
+    return tf.keras.models.load_model(
+        "digit_model.keras"
+    )
 
 
 model = load_model()
 
 
 # ============================================================
-# IMAGE PREPROCESSING TOOL
+# CONNECT TO GEMINI
+# ============================================================
+
+@st.cache_resource
+def load_gemini():
+
+    api_key = st.secrets["GEMINI_API_KEY"]
+
+    client = genai.Client(
+        api_key=api_key
+    )
+
+    return client
+
+
+gemini = load_gemini()
+
+
+# ============================================================
+# GEMINI IMAGE VALIDATION
+# ============================================================
+
+def validate_image_with_gemini(image):
+
+    prompt = """
+You are the validation agent for a handwritten digit
+recognition system.
+
+Carefully analyze the image.
+
+The image is VALID only when it contains exactly ONE clearly
+visible handwritten digit from 0 to 9.
+
+VALID:
+- One handwritten digit on paper
+- A clear photo of one handwritten 0–9
+- One handwritten digit with a simple background
+
+INVALID:
+- Cats, dogs, people, food, vehicles, buildings, objects
+- Screenshots of websites or applications
+- Computer screens
+- Code
+- Paragraphs
+- Words
+- Sentences
+- Multiple digits
+- Multiple handwritten characters
+- Blank images
+- Random objects
+- Printed text
+- A digit that is part of unrelated content
+
+Do NOT guess.
+
+Return ONLY JSON in this exact format:
+
+{
+    "is_valid": true,
+    "reason": "One handwritten digit is clearly visible",
+    "candidate_digit": 7
+}
+
+For an invalid image return:
+
+{
+    "is_valid": false,
+    "reason": "The image does not contain one handwritten digit",
+    "candidate_digit": null
+}
+
+candidate_digit must be an integer from 0 to 9 when valid.
+"""
+
+    try:
+
+        response = gemini.models.generate_content(
+            model="gemini-3.7-flash",
+            contents=[
+                prompt,
+                image
+            ],
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json"
+            )
+        )
+
+        result = json.loads(response.text)
+
+        return result
+
+    except Exception as e:
+
+        return {
+            "is_valid": False,
+            "reason": f"Gemini validation failed: {str(e)}",
+            "candidate_digit": None
+        }
+
+
+# ============================================================
+# IMAGE PREPROCESSING FOR YOUR CNN
 # ============================================================
 
 def preprocess_digit_image(image):
 
-    # Convert PIL image to NumPy array
-    image = np.array(image)
+    image_array = np.array(image)
 
-    # Convert RGB to grayscale
-    if len(image.shape) == 3:
+    # RGB → grayscale
+    if len(image_array.shape) == 3:
+
         gray = cv2.cvtColor(
-            image,
+            image_array,
             cv2.COLOR_RGB2GRAY
         )
-    else:
-        gray = image.copy()
 
-    # Remove small noise
+    else:
+
+        gray = image_array
+
+
+    # Remove noise
     gray = cv2.GaussianBlur(
         gray,
         (5, 5),
         0
     )
 
-    # Detect whether image is light or dark
-    # White paper + black pen
-    if np.mean(gray) > 127:
 
-        _, binary = cv2.threshold(
-            gray,
-            0,
-            255,
-            cv2.THRESH_BINARY_INV +
-            cv2.THRESH_OTSU
-        )
+    # Convert black handwriting on white paper
+    # into white digit on black background
+    _, binary = cv2.threshold(
+        gray,
+        0,
+        255,
+        cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU
+    )
 
-    # Black background + white digit
-    else:
-
-        _, binary = cv2.threshold(
-            gray,
-            0,
-            255,
-            cv2.THRESH_BINARY +
-            cv2.THRESH_OTSU
-        )
 
     # Find contours
     contours, _ = cv2.findContours(
@@ -83,71 +197,64 @@ def preprocess_digit_image(image):
         cv2.CHAIN_APPROX_SIMPLE
     )
 
-    cropped = binary
 
-    # Find the handwritten digit
-    if contours:
+    # Remove tiny noise
+    contours = [
+        c for c in contours
+        if cv2.contourArea(c) > 20
+    ]
 
-        image_area = binary.shape[0] * binary.shape[1]
 
-        valid_contours = []
+    if not contours:
 
-        for contour in contours:
+        return None
 
-            area = cv2.contourArea(contour)
 
-            if area < image_area * 0.001:
-                continue
+    # Largest contour
+    contour = max(
+        contours,
+        key=cv2.contourArea
+    )
 
-            x, y, w, h = cv2.boundingRect(contour)
 
-            # Ignore objects that cover almost the entire image
-            if (w * h) < image_area * 0.80:
+    # Bounding box
+    x, y, w, h = cv2.boundingRect(
+        contour
+    )
 
-                valid_contours.append(
-                    contour
-                )
 
-        if valid_contours:
+    # Add padding
+    padding = int(
+        max(w, h) * 0.25
+    )
 
-            contour = max(
-                valid_contours,
-                key=cv2.contourArea
-            )
 
-            x, y, w, h = cv2.boundingRect(
-                contour
-            )
+    x1 = max(
+        0,
+        x - padding
+    )
 
-            # Add padding around digit
-            padding = int(
-                max(w, h) * 0.25
-            )
+    y1 = max(
+        0,
+        y - padding
+    )
 
-            x1 = max(
-                0,
-                x - padding
-            )
+    x2 = min(
+        binary.shape[1],
+        x + w + padding
+    )
 
-            y1 = max(
-                0,
-                y - padding
-            )
+    y2 = min(
+        binary.shape[0],
+        y + h + padding
+    )
 
-            x2 = min(
-                binary.shape[1],
-                x + w + padding
-            )
 
-            y2 = min(
-                binary.shape[0],
-                y + h + padding
-            )
+    cropped = binary[
+        y1:y2,
+        x1:x2
+    ]
 
-            cropped = binary[
-                y1:y2,
-                x1:x2
-            ]
 
     # ========================================================
     # MAKE IMAGE SQUARE
@@ -160,21 +267,30 @@ def preprocess_digit_image(image):
         w
     )
 
+
     square = np.zeros(
         (size, size),
         dtype=np.uint8
     )
 
-    y_offset = (size - h) // 2
-    x_offset = (size - w) // 2
+
+    y_offset = (
+        size - h
+    ) // 2
+
+    x_offset = (
+        size - w
+    ) // 2
+
 
     square[
         y_offset:y_offset + h,
         x_offset:x_offset + w
     ] = cropped
 
+
     # ========================================================
-    # RESIZE TO MNIST 28x28
+    # RESIZE TO 28 × 28
     # ========================================================
 
     resized = cv2.resize(
@@ -183,257 +299,212 @@ def preprocess_digit_image(image):
         interpolation=cv2.INTER_AREA
     )
 
-    # Normalize
+
+    # ========================================================
+    # NORMALIZE
+    # ========================================================
+
     normalized = (
         resized.astype("float32") / 255.0
     )
 
-    # Shape required by neural network
-    processed = normalized.reshape(
+
+    return normalized.reshape(
         1,
         28,
         28
     )
 
-    return processed
-
 
 # ============================================================
-# AGENT TOOL 1 — IMAGE QUALITY CHECK
-# ============================================================
-
-def check_image_quality(image):
-
-    image_array = np.array(image)
-
-    # Convert to grayscale
-    if len(image_array.shape) == 3:
-
-        gray = cv2.cvtColor(
-            image_array,
-            cv2.COLOR_RGB2GRAY
-        )
-
-    else:
-
-        gray = image_array
-
-    # Check contrast
-    contrast = np.std(gray)
-
-    if contrast < 10:
-
-        return (
-            False,
-            "Image appears blank or unclear."
-        )
-
-    return (
-        True,
-        "Image quality is acceptable."
-    )
-
-
-# ============================================================
-# AGENT TOOL 2 — DIGIT PREDICTION
+# CNN PREDICTION
 # ============================================================
 
 def predict_digit(image):
 
-    # Preprocess image
     processed = preprocess_digit_image(
         image
     )
 
-    # Get model prediction
+
+    if processed is None:
+
+        return None, 0.0
+
+
     probabilities = model.predict(
         processed,
         verbose=0
     )[0]
 
-    # Find digit with highest probability
+
     digit = int(
-        np.argmax(probabilities)
-    )
-
-    # Find confidence
-    confidence = float(
-        np.max(probabilities)
-    )
-
-    return (
-        digit,
-        confidence,
-        probabilities
-    )
-
-
-# ============================================================
-# AGENT TOOL 3 — IMAGE ENHANCEMENT
-# ============================================================
-
-def enhance_digit_image(image):
-
-    image_array = np.array(image)
-
-    # Convert to grayscale
-    if len(image_array.shape) == 3:
-
-        gray = cv2.cvtColor(
-            image_array,
-            cv2.COLOR_RGB2GRAY
+        np.argmax(
+            probabilities
         )
-
-    else:
-
-        gray = image_array
-
-    # Improve contrast
-    gray = cv2.GaussianBlur(
-        gray,
-        (5, 5),
-        0
     )
 
-    # Threshold
-    _, enhanced = cv2.threshold(
-        gray,
-        0,
-        255,
-        cv2.THRESH_BINARY_INV +
-        cv2.THRESH_OTSU
+
+    confidence = float(
+        np.max(
+            probabilities
+        )
     )
 
-    return enhanced
+
+    return digit, confidence
 
 
 # ============================================================
-# 🤖 AGENT
+# AGENT
 # ============================================================
 
 def digit_agent(image):
 
     # --------------------------------------------------------
-    # STEP 1 — CHECK IMAGE
+    # STEP 1 — GEMINI VALIDATES IMAGE
     # --------------------------------------------------------
 
-    valid, quality_message = (
-        check_image_quality(image)
-    )
-
-    if not valid:
-
-        return {
-            "status": "failed",
-            "message": quality_message
-        }
-
-
-    # --------------------------------------------------------
-    # STEP 2 — FIRST PREDICTION
-    # --------------------------------------------------------
-
-    digit1, confidence1, probabilities1 = (
-        predict_digit(image)
-    )
-
-
-    # --------------------------------------------------------
-    # STEP 3 — AGENT DECISION
-    # --------------------------------------------------------
-
-    if confidence1 >= 0.90:
-
-        return {
-            "status": "success",
-            "digit": digit1,
-            "confidence": confidence1,
-            "attempts": 1,
-            "decision": (
-                "High confidence. "
-                "Prediction accepted."
-            )
-        }
-
-
-    # --------------------------------------------------------
-    # STEP 4 — LOW CONFIDENCE
-    # AGENT TRIES IMAGE ENHANCEMENT
-    # --------------------------------------------------------
-
-    enhanced = enhance_digit_image(
+    validation = validate_image_with_gemini(
         image
     )
 
-    # Convert enhanced image to PIL
-    enhanced_pil = Image.fromarray(
-        enhanced
-    ).convert("RGB")
+
+    # --------------------------------------------------------
+    # INVALID IMAGE
+    # --------------------------------------------------------
+
+    if not validation.get(
+        "is_valid",
+        False
+    ):
+
+        return {
+            "status": "invalid",
+            "reason": validation.get(
+                "reason",
+                "This is not a valid handwritten digit image."
+            )
+        }
 
 
-    # Second prediction
-    digit2, confidence2, probabilities2 = (
-        predict_digit(enhanced_pil)
+    # --------------------------------------------------------
+    # STEP 2 — CNN PREDICTION
+    # --------------------------------------------------------
+
+    digit, confidence = predict_digit(
+        image
+    )
+
+
+    if digit is None:
+
+        return {
+            "status": "invalid",
+            "reason": "The digit could not be extracted from the image."
+        }
+
+
+    # Gemini's candidate digit
+    gemini_digit = validation.get(
+        "candidate_digit"
     )
 
 
     # --------------------------------------------------------
-    # STEP 5 — COMPARE PREDICTIONS
+    # STEP 3 — AGENT COMPARES GEMINI AND CNN
     # --------------------------------------------------------
 
-    if confidence2 > confidence1:
+    try:
+
+        gemini_digit = int(
+            gemini_digit
+        )
+
+    except:
+
+        gemini_digit = None
+
+
+    # --------------------------------------------------------
+    # HIGH CONFIDENCE + AGREEMENT
+    # --------------------------------------------------------
+
+    if (
+        confidence >= 0.90
+        and gemini_digit == digit
+    ):
 
         return {
-            "status": "success",
-            "digit": digit2,
-            "confidence": confidence2,
-            "attempts": 2,
+            "status": "accepted",
+            "digit": digit,
+            "confidence": confidence,
+            "gemini_digit": gemini_digit,
             "decision": (
-                "Initial confidence was low. "
-                "Image was enhanced and the "
-                "more confident prediction was selected."
+                "Gemini and CNN agree. "
+                "High-confidence prediction accepted."
             )
         }
 
-    else:
+
+    # --------------------------------------------------------
+    # HIGH CNN CONFIDENCE BUT DISAGREEMENT
+    # --------------------------------------------------------
+
+    if confidence >= 0.90:
 
         return {
-            "status": "success",
-            "digit": digit1,
-            "confidence": confidence1,
-            "attempts": 2,
+            "status": "review",
+            "digit": digit,
+            "confidence": confidence,
+            "gemini_digit": gemini_digit,
             "decision": (
-                "Initial prediction was retained "
-                "because it had higher confidence."
+                "CNN has high confidence, but the AI validator "
+                "and CNN disagree. Manual review is recommended."
             )
         }
 
 
+    # --------------------------------------------------------
+    # MEDIUM CONFIDENCE
+    # --------------------------------------------------------
+
+    if confidence >= 0.70:
+
+        return {
+            "status": "review",
+            "digit": digit,
+            "confidence": confidence,
+            "gemini_digit": gemini_digit,
+            "decision": (
+                "A digit was detected, but CNN confidence is "
+                "moderate. Please review the prediction."
+            )
+        }
+
+
+    # --------------------------------------------------------
+    # LOW CONFIDENCE
+    # --------------------------------------------------------
+
+    return {
+        "status": "uncertain",
+        "digit": digit,
+        "confidence": confidence,
+        "gemini_digit": gemini_digit,
+        "decision": (
+            "Prediction confidence is too low. "
+            "Please upload a clearer handwritten digit."
+        )
+    }
+
+
 # ============================================================
-# STREAMLIT USER INTERFACE
-# ============================================================
-
-st.title(
-    "🤖 Agentic AI Handwritten Digit Recognition"
-)
-
-st.write(
-    "Upload a handwritten digit image and "
-    "let the AI agent recognize it."
-)
-
-st.info(
-    "For best results, upload an image containing "
-    "one handwritten digit."
-)
-
-
-# ============================================================
-# IMAGE UPLOAD
+# FILE UPLOAD
 # ============================================================
 
 uploaded_file = st.file_uploader(
-    "📷 Upload handwritten digit",
+    "📷 Upload image",
     type=[
         "png",
         "jpg",
@@ -443,36 +514,33 @@ uploaded_file = st.file_uploader(
 
 
 # ============================================================
-# DISPLAY AND PREDICT
+# RUN AGENT
 # ============================================================
 
-if uploaded_file is not None:
+if uploaded_file:
 
-    # Open uploaded image
     image = Image.open(
         uploaded_file
     ).convert("RGB")
 
 
-    # Display image
     st.subheader(
         "📷 Uploaded Image"
     )
 
+
     st.image(
         image,
-        width=350
+        width=400
     )
 
 
-    # Predict button
     if st.button(
-        "🤖 Predict Digit",
-        type="primary"
+        "🤖 Analyze Image"
     ):
 
         with st.spinner(
-            "AI Agent is analyzing the image..."
+            "AI Agent is analyzing..."
         ):
 
             result = digit_agent(
@@ -481,63 +549,97 @@ if uploaded_file is not None:
 
 
         # ====================================================
-        # RESULT
+        # INVALID
         # ====================================================
 
-        if result["status"] == "success":
+        if result["status"] == "invalid":
 
-            st.subheader(
-                "🎯 Prediction Result"
+            st.error(
+                "❌ INVALID IMAGE"
             )
 
+            st.write(
+                result["reason"]
+            )
+
+            st.info(
+                "Please upload a clear image containing "
+                "ONE handwritten digit from 0 to 9."
+            )
+
+
+        # ====================================================
+        # ACCEPTED
+        # ====================================================
+
+        elif result["status"] == "accepted":
+
             st.success(
-                f"Predicted Digit: {result['digit']}"
+                f"✅ Predicted Digit: {result['digit']}"
             )
 
             st.metric(
-                "Confidence",
+                "CNN Confidence",
                 f"{result['confidence'] * 100:.2f}%"
             )
 
             st.write(
-                f"**Number of Attempts:** "
-                f"{result['attempts']}"
+                f"👁️ Gemini Digit: "
+                f"{result['gemini_digit']}"
             )
 
-            st.info(
-                f"🤖 **Agent Decision:** "
+            st.success(
+                f"🤖 Agent Decision: "
                 f"{result['decision']}"
             )
 
 
-        else:
+        # ====================================================
+        # REVIEW
+        # ====================================================
 
-            st.error(
-                f"❌ {result['message']}"
+        elif result["status"] == "review":
+
+            st.warning(
+                f"⚠️ Predicted Digit: {result['digit']}"
+            )
+
+            st.metric(
+                "CNN Confidence",
+                f"{result['confidence'] * 100:.2f}%"
+            )
+
+            st.write(
+                f"👁️ Gemini Digit: "
+                f"{result['gemini_digit']}"
+            )
+
+            st.warning(
+                f"🤖 Agent Decision: "
+                f"{result['decision']}"
             )
 
 
-# ============================================================
-# PROJECT INFORMATION
-# ============================================================
+        # ====================================================
+        # UNCERTAIN
+        # ====================================================
 
-with st.expander(
-    "ℹ️ About this project"
-):
+        elif result["status"] == "uncertain":
 
-    st.write(
-        """
-        This application uses an Agentic AI layer
-        together with a trained MNIST neural network.
+            st.error(
+                "❌ Prediction Not Reliable"
+            )
 
-        The agent:
+            st.write(
+                f"CNN predicted: **{result['digit']}**"
+            )
 
-        1. Checks the uploaded image.
-        2. Preprocesses the image.
-        3. Sends the image to the trained model.
-        4. Checks the prediction confidence.
-        5. Enhances the image when confidence is low.
-        6. Compares predictions.
-        7. Selects the final prediction.
-        """
-    )
+            st.metric(
+                "CNN Confidence",
+                f"{result['confidence'] * 100:.2f}%"
+            )
+
+            st.info(
+                f"🤖 Agent Decision: "
+                f"{result['decision']}"
+            )
