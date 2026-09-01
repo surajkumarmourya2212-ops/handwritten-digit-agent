@@ -30,7 +30,7 @@ st.write("Upload an image containing one handwritten digit (0–9).")
 
 @st.cache_resource
 def load_digit_model():
-    return tf.keras.models.load_model("models/digit_model.keras")
+    return tf.keras.models.load_model("digit_model (1).keras")
 
 
 try:
